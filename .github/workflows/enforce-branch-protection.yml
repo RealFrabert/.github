@@ -1,0 +1,35 @@
+name: Enforce branch protection
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+  repository:
+    types: [created]
+
+jobs:
+  enforce:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Generate app token
+        id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.FCF_MERGER_APP_ID }}
+          private-key: ${{ secrets.FCF_MERGER_PRIVATE_KEY }}
+          owner: RealFrabert
+
+      - name: Apply branch protection to all repos with a main branch
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          PROTECTION: '{"required_status_checks":null,"enforce_admins":false,"required_pull_request_reviews":null,"restrictions":{"users":[],"teams":[],"apps":["frabert-fcf-merger"]}}'
+        run: |
+          gh repo list RealFrabert --json name --limit 1000 --jq '.[].name' | while read repo; do
+            if gh api "/repos/RealFrabert/$repo/branches/main" --silent 2>/dev/null; then
+              echo "Protecting RealFrabert/$repo"
+              echo "$PROTECTION" | gh api "/repos/RealFrabert/$repo/branches/main/protection" \
+                --method PUT --input - || echo "  Warning: failed to protect $repo"
+            fi
+          done
