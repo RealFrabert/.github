@@ -1,11 +1,12 @@
 name: Enforce branch protection
 
+# Repository creation is not a workflow trigger (the earlier `repository: types: [created]`
+# made GitHub reject this file, so it never ran — RealFrabert/.github#1). The daily schedule
+# bounds how long a new repo stays unprotected; run it by hand after creating a repo.
 on:
   schedule:
     - cron: '0 3 * * *'
   workflow_dispatch:
-  repository:
-    types: [created]
 
 jobs:
   enforce:
@@ -13,23 +14,43 @@ jobs:
     permissions:
       contents: read
     steps:
+      # A dedicated app with Administration: write and nothing else. Its key lives only in
+      # these secrets, never on a host where FCF sessions run, so no session can mint a
+      # token that removes protection. frabert-fcf-merger lacks Administration on purpose.
       - name: Generate app token
         id: token
         uses: actions/create-github-app-token@v1
         with:
-          app-id: ${{ secrets.FCF_MERGER_APP_ID }}
-          private-key: ${{ secrets.FCF_MERGER_PRIVATE_KEY }}
+          app-id: ${{ secrets.PROTECTION_APP_ID }}
+          private-key: ${{ secrets.PROTECTION_APP_PRIVATE_KEY }}
           owner: RealFrabert
 
-      - name: Apply branch protection to all repos with a main branch
+      - name: Apply merger-only push restriction to every unarchived repo's main
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           PROTECTION: '{"required_status_checks":null,"enforce_admins":false,"required_pull_request_reviews":null,"restrictions":{"users":[],"teams":[],"apps":["frabert-fcf-merger"]}}'
         run: |
-          gh repo list RealFrabert --json name --limit 1000 --jq '.[].name' | while read repo; do
-            if gh api "/repos/RealFrabert/$repo/branches/main" --silent 2>/dev/null; then
-              echo "Protecting RealFrabert/$repo"
-              echo "$PROTECTION" | gh api "/repos/RealFrabert/$repo/branches/main/protection" \
-                --method PUT --input - || echo "  Warning: failed to protect $repo"
+          failed=0
+          for repo in $(gh repo list RealFrabert --no-archived --limit 1000 --json name --jq '.[].name'); do
+            if ! gh api "/repos/RealFrabert/$repo/branches/main" --silent 2>/dev/null; then
+              echo "skip   $repo (no main branch)"
+              continue
+            fi
+            # Status checks and reviews live in rulesets; classic protection carries only the
+            # push restriction. Never overwrite a protection someone set differently by hand.
+            if apps=$(gh api "/repos/RealFrabert/$repo/branches/main/protection" --jq '[.restrictions.apps[]?.slug] | join(",")' 2>/dev/null); then
+              case ",$apps," in
+                *,frabert-fcf-merger,*) echo "ok     $repo" ;;
+                *) echo "::error::$repo main is protected without the frabert-fcf-merger restriction (apps: ${apps:-none}); not overwriting"; failed=1 ;;
+              esac
+              continue
+            fi
+            if echo "$PROTECTION" | gh api "/repos/RealFrabert/$repo/branches/main/protection" --method PUT --input - --silent; then
+              echo "fixed  $repo"
+              echo "- protected \`$repo\`" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::error::failed to protect $repo"
+              failed=1
             fi
           done
+          exit "$failed"
