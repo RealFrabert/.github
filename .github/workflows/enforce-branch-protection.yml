@@ -30,27 +30,36 @@ jobs:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           PROTECTION: '{"required_status_checks":null,"enforce_admins":false,"required_pull_request_reviews":null,"restrictions":{"users":[],"teams":[],"apps":["frabert-fcf-merger"]}}'
         run: |
-          failed=0
+          failed=0; done_count=0
           for repo in $(gh repo list RealFrabert --no-archived --limit 1000 --json name --jq '.[].name'); do
-            if ! gh api "/repos/RealFrabert/$repo/branches/main" --silent 2>/dev/null; then
-              echo "skip   $repo (no main branch)"
-              continue
-            fi
+            # Only the protection endpoint is used: the app holds Administration and nothing
+            # else, and GET /branches/{branch} needs Contents on a private repo, so probing the
+            # branch first reported every private repo as having no main (RealFrabert/.github#1).
             # Status checks and reviews live in rulesets; classic protection carries only the
             # push restriction. Never overwrite a protection someone set differently by hand.
-            if apps=$(gh api "/repos/RealFrabert/$repo/branches/main/protection" --jq '[.restrictions.apps[]?.slug] | join(",")' 2>/dev/null); then
-              case ",$apps," in
-                *,frabert-fcf-merger,*) echo "ok     $repo" ;;
-                *) echo "::error::$repo main is protected without the frabert-fcf-merger restriction (apps: ${apps:-none}); not overwriting"; failed=1 ;;
+            if out=$(gh api "/repos/RealFrabert/$repo/branches/main/protection" --jq '[.restrictions.apps[]?.slug] | join(",")' 2>&1); then
+              case ",$out," in
+                *,frabert-fcf-merger,*) echo "ok     $repo"; done_count=$((done_count + 1)) ;;
+                *) echo "::error::$repo main is protected without the frabert-fcf-merger restriction (apps: ${out:-none}); not overwriting"; failed=1 ;;
               esac
               continue
             fi
-            if echo "$PROTECTION" | gh api "/repos/RealFrabert/$repo/branches/main/protection" --method PUT --input - --silent; then
-              echo "fixed  $repo"
-              echo "- protected \`$repo\`" >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "::error::failed to protect $repo"
-              failed=1
-            fi
+            case "$out" in
+              *"Branch not found"*)
+                echo "::warning::$repo has no main branch yet; skipped" ;;
+              *"Branch not protected"*)
+                if echo "$PROTECTION" | gh api "/repos/RealFrabert/$repo/branches/main/protection" --method PUT --input - --silent; then
+                  echo "fixed  $repo"; done_count=$((done_count + 1))
+                  echo "- protected \`$repo\`" >> "$GITHUB_STEP_SUMMARY"
+                else
+                  echo "::error::failed to protect $repo"; failed=1
+                fi ;;
+              *)
+                echo "::error::$repo: cannot read main's protection: $out"; failed=1 ;;
+            esac
           done
+          if [ "$done_count" -eq 0 ]; then
+            echo "::error::no repo confirmed protected; the token or the repo list is wrong"; failed=1
+          fi
+          echo "$done_count repos carry the merger-only restriction" >> "$GITHUB_STEP_SUMMARY"
           exit "$failed"
