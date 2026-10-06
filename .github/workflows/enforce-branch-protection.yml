@@ -19,7 +19,7 @@ jobs:
       # token that removes protection. frabert-fcf-merger lacks Administration on purpose.
       - name: Generate app token
         id: token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.PROTECTION_APP_ID }}
           private-key: ${{ secrets.PROTECTION_APP_PRIVATE_KEY }}

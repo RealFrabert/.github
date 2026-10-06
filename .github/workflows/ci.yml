@@ -11,7 +11,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # A workflow file GitHub rejects never runs and never reports; lint catches it first.
       - name: actionlint
         run: |
